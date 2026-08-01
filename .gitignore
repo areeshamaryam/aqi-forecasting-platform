@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual Environment
+.venv/
+
+# Environment Variables
+.env
+
+# VS Code
+.vscode/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Python Cache
+.pytest_cache/
+.mypy_cache/
+
+# ML Models
+*.pkl
+*.joblib
+*.h5
+*.onnx
+
+# Generated Data
+ml_pipeline/data/raw/
+ml_pipeline/data/processed/
+
+# Logs
+*.log
+logs/
+
+# Build
+build/
+dist/
+
+# Hopsworks
+.hopsworks/

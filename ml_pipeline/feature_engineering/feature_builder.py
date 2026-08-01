@@ -2,7 +2,9 @@
 from pathlib import Path
 from datetime import datetime
 
-from .utils import load_json, save_json, get_latest_file
+import pandas as pd
+from .utils import load_json, get_latest_file
+
 
 
 # Project directories
@@ -83,22 +85,46 @@ def build_feature_record(weather_data: dict, pollution_data: dict) -> dict:
 
 def save_processed_features(feature_record: dict):
     """
-    Save processed feature record as a JSON file.
+    Save processed features to a Parquet dataset.
     """
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    parquet_file = PROCESSED_DIR / "features.parquet"
 
-    filename = (
-        f"{feature_record['city'].lower()}_{timestamp}_features.json"
+    new_df = pd.DataFrame([feature_record])
+
+    if parquet_file.exists():
+        existing_df = pd.read_parquet(parquet_file)
+        updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        updated_df = new_df
+
+    updated_df.to_parquet(
+        parquet_file,
+        index=False,
+        engine="pyarrow"
     )
 
-    file_path = PROCESSED_DIR / filename
+    print(f"✅ Features saved to: {parquet_file}")
+def display_dataset_summary():
+    """
+    Display basic information about the processed dataset.
+    """
 
-    save_json(feature_record, file_path)
+    parquet_file = PROCESSED_DIR / "features.parquet"
 
-    print(f"✅ Processed features saved to: {file_path}")
+    if not parquet_file.exists():
+        print("No dataset found.")
+        return
+
+    df = pd.read_parquet(parquet_file)
+
+    print("\n========== DATASET SUMMARY ==========")
+    print(df.head())
+    print("\nShape:", df.shape)
+    print("\nColumns:")
+    print(df.columns.tolist())    
 
 
 def main():
@@ -120,10 +146,13 @@ def main():
         pollution_data,
     )
 
+    # Save first
     save_processed_features(feature_record)
 
-    print("\n✅ Feature Engineering Completed Successfully!")
+    # Then display the dataset
+    display_dataset_summary()
 
+    print("\n✅ Feature Engineering Completed Successfully!")   
 
 if __name__ == "__main__":
     main()

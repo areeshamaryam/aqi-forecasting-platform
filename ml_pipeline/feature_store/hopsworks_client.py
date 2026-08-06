@@ -1,3 +1,11 @@
+import os
+import tempfile
+
+temp_dir = tempfile.gettempdir()
+
+os.environ["TMP"] = temp_dir
+os.environ["TEMP"] = temp_dir
+os.environ["TMPDIR"] = temp_dir
 import hopsworks
 from pathlib import Path
 

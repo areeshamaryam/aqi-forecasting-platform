@@ -31,7 +31,6 @@ class OpenMeteoClient:
                 "relative_humidity_2m,"
                 "surface_pressure,"
                 "wind_speed_10m,"
-                "visibility,"
                 "cloud_cover"
             ),
             "timezone": "Asia/Karachi",
@@ -49,7 +48,6 @@ class OpenMeteoClient:
                 "nitrogen_dioxide,"
                 "ozone,"
                 "sulphur_dioxide,"
-                "ammonia,"
                 "us_aqi"
             ),
             "timezone": "Asia/Karachi",

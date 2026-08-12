@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from datetime import datetime
 
@@ -6,153 +5,247 @@ import pandas as pd
 from .utils import load_json, get_latest_file
 
 
+# ============================================================
+# PROJECT DIRECTORIES
+# ============================================================
 
-# Project directories
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 RAW_WEATHER_DIR = BASE_DIR / "data" / "raw" / "weather"
 RAW_POLLUTION_DIR = BASE_DIR / "data" / "raw" / "pollution"
 
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
-def extract_weather_features(weather_data: dict) -> dict:
+
+
+# ============================================================
+# WEATHER FEATURE EXTRACTION
+# ============================================================
+
+def extract_weather_features(weather_data: dict) -> list:
     """
-    Extract relevant weather features from OpenWeather response.
-    """
-
-    return {
-        "city": weather_data.get("name"),
-
-        "timestamp": datetime.fromtimestamp(
-            weather_data["dt"]
-        ).strftime("%Y-%m-%d %H:%M:%S"),
-
-        "temperature": weather_data["main"]["temp"],
-        "feels_like": weather_data["main"]["feels_like"],
-        "humidity": weather_data["main"]["humidity"],
-        "pressure": weather_data["main"]["pressure"],
-
-        "wind_speed": weather_data["wind"]["speed"],
-
-        "visibility": weather_data.get("visibility"),
-
-        "clouds": weather_data["clouds"]["all"],
-    }
-def extract_pollution_features(pollution_data: dict) -> dict:
-    """
-    Extract relevant air pollution features from OpenWeather response.
+    Extract hourly weather features from Open-Meteo response.
     """
 
-    pollution = pollution_data["list"][0]
+    hourly = weather_data["hourly"]
 
-    return {
-        "aqi": pollution["main"]["aqi"],
+    timestamps = hourly["time"]
 
-        "co": pollution["components"]["co"],
-        "no": pollution["components"]["no"],
-        "no2": pollution["components"]["no2"],
-        "o3": pollution["components"]["o3"],
-        "so2": pollution["components"]["so2"],
-        "pm2_5": pollution["components"]["pm2_5"],
-        "pm10": pollution["components"]["pm10"],
-        "nh3": pollution["components"]["nh3"],
-    }
-def build_feature_record(weather_data: dict, pollution_data: dict) -> dict:
+    records = []
+
+    for i, timestamp in enumerate(timestamps):
+
+        record = {
+            "timestamp": timestamp,
+
+            "temperature": hourly["temperature_2m"][i],
+            "feels_like": hourly["apparent_temperature"][i],
+            "humidity": hourly["relative_humidity_2m"][i],
+            "pressure": hourly["surface_pressure"][i],
+            "wind_speed": hourly["wind_speed_10m"][i],
+            "clouds": hourly["cloud_cover"][i],
+        }
+
+        records.append(record)
+
+    return records
+
+
+# ============================================================
+# AIR QUALITY FEATURE EXTRACTION
+# ============================================================
+
+def extract_pollution_features(air_quality_data: dict) -> list:
     """
-    Build a complete feature record by combining weather and pollution data.
+    Extract hourly air-quality features from Open-Meteo response.
     """
 
-    weather_features = extract_weather_features(weather_data)
-    pollution_features = extract_pollution_features(pollution_data)
+    hourly = air_quality_data["hourly"]
 
-    feature_record = {
-        **weather_features,
-        **pollution_features,
-    }
+    timestamps = hourly["time"]
 
-    # Extract time-based features
-    timestamp = datetime.strptime(
-        feature_record["timestamp"],
-        "%Y-%m-%d %H:%M:%S"
+    records = []
+
+    for i, timestamp in enumerate(timestamps):
+
+        record = {
+            "timestamp": timestamp,
+
+            "aqi": hourly["us_aqi"][i],
+
+            "co": hourly["carbon_monoxide"][i],
+            "no2": hourly["nitrogen_dioxide"][i],
+            "o3": hourly["ozone"][i],
+            "so2": hourly["sulphur_dioxide"][i],
+
+            "pm2_5": hourly["pm2_5"][i],
+            "pm10": hourly["pm10"][i],
+        }
+
+        records.append(record)
+
+    return records
+
+
+# ============================================================
+# BUILD COMPLETE FEATURE DATASET
+# ============================================================
+
+def build_feature_dataframe(
+    weather_data: dict,
+    air_quality_data: dict,
+    city: str,
+) -> pd.DataFrame:
+    """
+    Combine weather and air-quality data into a single
+    hourly feature dataset.
+    """
+
+    weather_records = extract_weather_features(weather_data)
+    pollution_records = extract_pollution_features(air_quality_data)
+
+    weather_df = pd.DataFrame(weather_records)
+    pollution_df = pd.DataFrame(pollution_records)
+
+    # Merge using timestamp
+    df = pd.merge(
+        weather_df,
+        pollution_df,
+        on="timestamp",
+        how="inner",
     )
 
-    feature_record["hour"] = timestamp.hour
-    feature_record["day"] = timestamp.day
-    feature_record["month"] = timestamp.month
-    feature_record["day_of_week"] = timestamp.weekday()
-    feature_record["is_weekend"] = int(timestamp.weekday() >= 5)
+    # Add city
+    df["city"] = city
 
-    return feature_record
+    # Convert timestamp to datetime
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-def save_processed_features(feature_record: dict):
+    # ========================================================
+    # TIME-BASED FEATURES
+    # ========================================================
+
+    df["hour"] = df["timestamp"].dt.hour
+    df["day"] = df["timestamp"].dt.day
+    df["month"] = df["timestamp"].dt.month
+    df["day_of_week"] = df["timestamp"].dt.dayofweek
+
+    df["is_weekend"] = (
+        df["day_of_week"] >= 5
+    ).astype(int)
+
+    # ========================================================
+    # AQI CHANGE RATE
+    # ========================================================
+
+    df["aqi_change_rate"] = df["aqi"].diff()
+
+    return df
+
+
+# ============================================================
+# SAVE PROCESSED FEATURES
+# ============================================================
+
+def save_processed_features(df: pd.DataFrame):
     """
-    Save processed features to a Parquet dataset.
+    Save processed features to Parquet.
     """
 
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    parquet_file = PROCESSED_DIR / "features.parquet"
+    parquet_file = (
+        PROCESSED_DIR / "features.parquet"
+    )
 
-    new_df = pd.DataFrame([feature_record])
-
-    if parquet_file.exists():
-        existing_df = pd.read_parquet(parquet_file)
-        updated_df = pd.concat([existing_df, new_df], ignore_index=True)
-    else:
-        updated_df = new_df
-
-    updated_df.to_parquet(
+    df.to_parquet(
         parquet_file,
         index=False,
-        engine="pyarrow"
+        engine="pyarrow",
     )
 
-    print(f"✅ Features saved to: {parquet_file}")
-def display_dataset_summary():
+    print(
+        f"✅ Features saved to: {parquet_file}"
+    )
+
+
+# ============================================================
+# DATASET SUMMARY
+# ============================================================
+
+def display_dataset_summary(df: pd.DataFrame):
     """
     Display basic information about the processed dataset.
     """
 
-    parquet_file = PROCESSED_DIR / "features.parquet"
-
-    if not parquet_file.exists():
-        print("No dataset found.")
-        return
-
-    df = pd.read_parquet(parquet_file)
-
     print("\n========== DATASET SUMMARY ==========")
-    print(df.head())
-    print("\nShape:", df.shape)
-    print("\nColumns:")
-    print(df.columns.tolist())    
 
+    print("\nShape:")
+    print(df.shape)
+
+    print("\nColumns:")
+    print(df.columns.tolist())
+
+    print("\nFirst 5 records:")
+    print(df.head())
+
+    print("\nMissing values:")
+    print(df.isnull().sum())
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
     """
-    Build features from the latest weather and pollution data.
+    Build features from the latest Open-Meteo data.
     """
 
-    weather_file = get_latest_file(RAW_WEATHER_DIR)
-    pollution_file = get_latest_file(RAW_POLLUTION_DIR)
-
-    print(f"📄 Weather File: {weather_file.name}")
-    print(f"📄 Pollution File: {pollution_file.name}")
-
-    weather_data = load_json(weather_file)
-    pollution_data = load_json(pollution_file)
-
-    feature_record = build_feature_record(
-        weather_data,
-        pollution_data,
+    weather_file = get_latest_file(
+        RAW_WEATHER_DIR
     )
 
-    # Save first
-    save_processed_features(feature_record)
+    pollution_file = get_latest_file(
+        RAW_POLLUTION_DIR
+    )
 
-    # Then display the dataset
-    display_dataset_summary()
+    print(
+        f"📄 Weather File: {weather_file.name}"
+    )
 
-    print("\n✅ Feature Engineering Completed Successfully!")   
+    print(
+        f"📄 Pollution File: {pollution_file.name}"
+    )
+
+    weather_data = load_json(
+        weather_file
+    )
+
+    air_quality_data = load_json(
+        pollution_file
+    )
+
+    # Get city from configuration if available
+    city = "Islamabad"
+
+    df = build_feature_dataframe(
+        weather_data,
+        air_quality_data,
+        city,
+    )
+
+    save_processed_features(df)
+
+    display_dataset_summary(df)
+
+    print(
+        "\n✅ Open-Meteo Feature Engineering "
+        "Completed Successfully!"
+    )
+
 
 if __name__ == "__main__":
     main()

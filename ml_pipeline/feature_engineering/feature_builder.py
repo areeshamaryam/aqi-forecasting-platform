@@ -4,7 +4,6 @@ from datetime import datetime
 import pandas as pd
 from .utils import load_json, get_latest_file
 
-
 # ============================================================
 # PROJECT DIRECTORIES
 # ============================================================

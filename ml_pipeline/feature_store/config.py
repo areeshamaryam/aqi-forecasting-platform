@@ -9,7 +9,7 @@ load_dotenv()
 # -----------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-FEATURES_PATH = BASE_DIR / "data" / "processed" / "features.parquet"
+FEATURES_PATH = BASE_DIR / "data" / "processed" / "historical_features.parquet"
 
 # -----------------------------
 # Hopsworks

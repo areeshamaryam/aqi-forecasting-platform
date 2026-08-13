@@ -29,22 +29,21 @@ def upload_features():
 
     # Create or get Feature Group
     feature_group = fs.get_or_create_feature_group(
-        name=FEATURE_GROUP_NAME,
-        version=FEATURE_GROUP_VERSION,
-        description="Engineered AQI forecasting features",
-        primary_key=["city", "timestamp"],
-        event_time="timestamp",
-        online_enabled=True,
-        time_travel_format="HUDI",
+    name=FEATURE_GROUP_NAME,
+    version=FEATURE_GROUP_VERSION,
+    description="Open-Meteo AQI forecasting features",
+    primary_key=["city", "timestamp"],
+    event_time="timestamp",
+    online_enabled=True,
+    time_travel_format="HUDI",
+    statistics_config=False,
+)
 
-    )
 
     # Upload data
     feature_group.insert(
     df,
     write_options={"wait_for_job": True},
-    validation_options={"save_report": True},
-
 )
 
     print("✅ Features uploaded successfully!")

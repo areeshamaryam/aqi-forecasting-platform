@@ -1,5 +1,4 @@
 from pathlib import Path
-
 import pandas as pd
 import numpy as np
 
@@ -12,7 +11,7 @@ from sklearn.pipeline import Pipeline
 from xgboost import XGBRegressor
 # ============================================================
 # PROJECT PATHS
-# ============================================================
+# final train file with early stopping
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 

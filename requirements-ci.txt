@@ -16,6 +16,6 @@ fsspec==2025.7.0
 hsfs==2.1.8
 hopsworks==5.0.4
 protobuf==4.25.9
-
+confluent-kafka==2.11.1
 scikit-learn==1.7.2
 joblib==1.5.3

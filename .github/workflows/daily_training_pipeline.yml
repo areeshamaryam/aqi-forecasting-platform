@@ -1,0 +1,35 @@
+name: Daily Training Pipeline
+
+on:
+  schedule:
+    # Runs once a day at 01:00 UTC (after several hourly
+    # feature runs have already landed new data)
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    # Allows manually triggering this workflow from the
+    # GitHub Actions tab, useful for testing.
+
+jobs:
+  retrain-and-register-model:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run daily training pipeline
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+        run: |
+          python -m ml_pipeline.run_daily_pipeline

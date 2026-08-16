@@ -54,6 +54,8 @@ RESULTS_DIR = (
 MODEL_DIR = (
     BASE_DIR
     / "ml_pipeline"
+    / "data"
+    / "processed"
     / "models"
 )
 
@@ -63,57 +65,32 @@ MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================
 # CONFIGURATION
+#
+# This trains ONE LSTM model that predicts AQI for all 72
+# hours (t+1 ... t+72) in a single forward pass, using the
+# same target structure as prepare_training_data.py and
+# regsiter_model.py (Ridge). This is used as the "deep
+# learning" comparison point required by the project brief
+# ("support multiple forecasting models from statistical to
+# deep learning") — it is NOT expected to beat Ridge, since
+# the dataset (~12k sequences) is small for an LSTM and the
+# engineered lag/rolling features already capture most of
+# the time-series signal directly. Keep these results (and
+# the comparison against Ridge) in your report.
 # ============================================================
 
-TARGET_COLUMN = "target_aqi"
+FORECAST_HORIZON_HOURS = 72
 
-SEQUENCE_LENGTH = 24
+TARGET_COLUMNS = [
+    f"target_aqi_h{h}"
+    for h in range(1, FORECAST_HORIZON_HOURS + 1)
+]
+
+SEQUENCE_LENGTH = 24   # use the past 24 hours to predict the next 72
 
 EPOCHS = 30
 
 BATCH_SIZE = 64
-
-
-# ============================================================
-# FEATURES
-# ============================================================
-
-FEATURE_COLUMNS = [
-    "temperature",
-    "feels_like",
-    "humidity",
-    "pressure",
-    "wind_speed",
-    "clouds",
-    "aqi",
-    "co",
-    "no2",
-    "o3",
-    "so2",
-    "pm2_5",
-    "pm10",
-    "hour",
-    "day",
-    "month",
-    "day_of_week",
-    "is_weekend",
-    "aqi_change_rate",
-    "aqi_lag_1h",
-    "aqi_lag_3h",
-    "aqi_lag_6h",
-    "aqi_lag_12h",
-    "aqi_lag_24h",
-    "aqi_rolling_mean_3h",
-    "aqi_rolling_std_3h",
-    "aqi_rolling_mean_6h",
-    "aqi_rolling_std_6h",
-    "aqi_rolling_mean_24h",
-    "aqi_rolling_std_24h",
-    "hour_sin",
-    "hour_cos",
-    "month_sin",
-    "month_cos",
-]
 
 
 # ============================================================
@@ -138,13 +115,40 @@ def load_datasets():
 
 
 # ============================================================
+# DETERMINE FEATURE COLUMNS
+# ============================================================
+
+def get_feature_columns(train_df):
+    """
+    Use every column that is not an identifier/timestamp and
+    not one of the 72 target columns. This keeps the LSTM's
+    inputs consistent with whatever prepare_training_data.py
+    produced, instead of hard-coding a feature list that could
+    drift out of sync.
+    """
+
+    non_feature_columns = [
+        "city",
+        "timestamp",
+    ] + TARGET_COLUMNS
+
+    feature_columns = [
+        column
+        for column in train_df.columns
+        if column not in non_feature_columns
+    ]
+
+    return feature_columns
+
+
+# ============================================================
 # CREATE SEQUENCES
 # ============================================================
 
-def create_sequences(df, feature_columns, target_column, scaler):
+def create_sequences(df, feature_columns, scaler):
 
     X_values = df[feature_columns].values
-    y_values = df[target_column].values
+    y_values = df[TARGET_COLUMNS].values
 
     X_scaled = scaler.transform(X_values)
 
@@ -154,9 +158,7 @@ def create_sequences(df, feature_columns, target_column, scaler):
     for i in range(SEQUENCE_LENGTH, len(df)):
 
         X.append(
-            X_scaled[
-                i - SEQUENCE_LENGTH:i
-            ]
+            X_scaled[i - SEQUENCE_LENGTH:i]
         )
 
         y.append(
@@ -170,7 +172,7 @@ def create_sequences(df, feature_columns, target_column, scaler):
 # BUILD LSTM MODEL
 # ============================================================
 
-def build_model(input_shape):
+def build_model(input_shape, output_size):
 
     model = Sequential(
         [
@@ -184,7 +186,8 @@ def build_model(input_shape):
 
             Dense(32, activation="relu"),
 
-            Dense(1),
+            # One output neuron per forecast hour (72 total)
+            Dense(output_size),
         ]
     )
 
@@ -206,36 +209,59 @@ def evaluate_model(model, X, y, dataset_name):
     predictions = model.predict(
         X,
         verbose=0,
-    ).flatten()
+    )
 
-    rmse = np.sqrt(
-        mean_squared_error(
-            y,
-            predictions,
+    overall_rmse = np.sqrt(
+        mean_squared_error(y, predictions)
+    )
+
+    overall_mae = mean_absolute_error(y, predictions)
+
+    overall_r2 = r2_score(y, predictions)
+
+    print(f"\n{dataset_name} performance (all 72 hours combined):")
+    print(f"RMSE: {overall_rmse:.4f}")
+    print(f"MAE:  {overall_mae:.4f}")
+    print(f"R²:   {overall_r2:.4f}")
+
+    checkpoint_metrics = {}
+
+    print(f"\n{dataset_name} performance at key checkpoints:")
+
+    for h in [1, 6, 12, 24, 48, 72]:
+
+        col_index = h - 1
+
+        rmse_h = np.sqrt(
+            mean_squared_error(y[:, col_index], predictions[:, col_index])
         )
-    )
 
-    mae = mean_absolute_error(
-        y,
-        predictions,
-    )
+        mae_h = mean_absolute_error(
+            y[:, col_index], predictions[:, col_index]
+        )
 
-    r2 = r2_score(
-        y,
-        predictions,
-    )
+        r2_h = r2_score(
+            y[:, col_index], predictions[:, col_index]
+        )
 
-    print(f"\n{dataset_name} Performance:")
+        print(
+            f"  hour {h:>2}: "
+            f"RMSE={rmse_h:.3f}  MAE={mae_h:.3f}  R²={r2_h:.3f}"
+        )
 
-    print(f"RMSE: {rmse:.4f}")
-    print(f"MAE:  {mae:.4f}")
-    print(f"R²:   {r2:.4f}")
+        checkpoint_metrics[f"rmse_h{h}"] = float(rmse_h)
+        checkpoint_metrics[f"mae_h{h}"] = float(mae_h)
+        checkpoint_metrics[f"r2_h{h}"] = float(r2_h)
 
-    return {
-        "rmse": rmse,
-        "mae": mae,
-        "r2": r2,
+    metrics = {
+        "rmse": float(overall_rmse),
+        "mae": float(overall_mae),
+        "r2": float(overall_r2),
     }
+
+    metrics.update(checkpoint_metrics)
+
+    return metrics
 
 
 # ============================================================
@@ -244,33 +270,16 @@ def evaluate_model(model, X, y, dataset_name):
 
 def main():
 
-    # --------------------------------------------------------
-    # Load datasets
-    # --------------------------------------------------------
-
     train_df, validation_df, test_df = load_datasets()
 
-    # --------------------------------------------------------
-    # Verify required columns
-    # --------------------------------------------------------
+    feature_columns = get_feature_columns(train_df)
 
-    missing_features = [
-        column
-        for column in FEATURE_COLUMNS
-        if column not in train_df.columns
-    ]
-
-    if missing_features:
-
-        raise ValueError(
-            f"Missing features: {missing_features}"
-        )
+    print(f"\nNumber of features: {len(feature_columns)}")
+    print(f"Number of target hours: {len(TARGET_COLUMNS)}")
 
     # --------------------------------------------------------
-    # Prepare scaler
-    #
-    # IMPORTANT:
-    # Fit scaler ONLY on training data.
+    # Scale features. Fit ONLY on training data to avoid
+    # leaking validation/test information into the scaler.
     # --------------------------------------------------------
 
     print("\n" + "=" * 60)
@@ -279,70 +288,43 @@ def main():
 
     scaler = StandardScaler()
 
-    scaler.fit(
-        train_df[FEATURE_COLUMNS]
-    )
+    scaler.fit(train_df[feature_columns])
 
     # --------------------------------------------------------
-    # Create sequences
+    # Build 24-hour input sequences for every split
     # --------------------------------------------------------
 
     print("\n" + "=" * 60)
-    print("CREATING 24-HOUR SEQUENCES")
+    print("CREATING 24-HOUR INPUT SEQUENCES")
     print("=" * 60)
 
-    X_train, y_train = create_sequences(
-        train_df,
-        FEATURE_COLUMNS,
-        TARGET_COLUMN,
-        scaler,
-    )
-
+    X_train, y_train = create_sequences(train_df, feature_columns, scaler)
     X_validation, y_validation = create_sequences(
-        validation_df,
-        FEATURE_COLUMNS,
-        TARGET_COLUMN,
-        scaler,
+        validation_df, feature_columns, scaler
     )
+    X_test, y_test = create_sequences(test_df, feature_columns, scaler)
 
-    X_test, y_test = create_sequences(
-        test_df,
-        FEATURE_COLUMNS,
-        TARGET_COLUMN,
-        scaler,
-    )
-
-    print(
-        f"Training sequences:   {X_train.shape}"
-    )
-
-    print(
-        f"Validation sequences: {X_validation.shape}"
-    )
-
-    print(
-        f"Test sequences:       {X_test.shape}"
-    )
+    print(f"Training sequences:   {X_train.shape} -> targets {y_train.shape}")
+    print(f"Validation sequences: {X_validation.shape}")
+    print(f"Test sequences:       {X_test.shape}")
 
     # --------------------------------------------------------
     # Build model
     # --------------------------------------------------------
 
     print("\n" + "=" * 60)
-    print("BUILDING LSTM MODEL")
+    print("BUILDING LSTM MODEL (72-HOUR MULTI-OUTPUT)")
     print("=" * 60)
 
     model = build_model(
-        input_shape=(
-            X_train.shape[1],
-            X_train.shape[2],
-        )
+        input_shape=(X_train.shape[1], X_train.shape[2]),
+        output_size=len(TARGET_COLUMNS),
     )
 
     model.summary()
 
     # --------------------------------------------------------
-    # Early stopping
+    # Train
     # --------------------------------------------------------
 
     early_stopping = EarlyStopping(
@@ -351,110 +333,74 @@ def main():
         restore_best_weights=True,
     )
 
-    # --------------------------------------------------------
-    # Train
-    # --------------------------------------------------------
-
     print("\n" + "=" * 60)
     print("TRAINING LSTM")
     print("=" * 60)
 
-    history = model.fit(
+    model.fit(
         X_train,
         y_train,
-
-        validation_data=(
-            X_validation,
-            y_validation,
-        ),
-
+        validation_data=(X_validation, y_validation),
         epochs=EPOCHS,
-
         batch_size=BATCH_SIZE,
-
-        callbacks=[
-            early_stopping
-        ],
-
+        callbacks=[early_stopping],
         verbose=1,
     )
 
     # --------------------------------------------------------
-    # Validation evaluation
+    # Evaluate on validation and test
     # --------------------------------------------------------
 
-    validation_results = evaluate_model(
-        model,
-        X_validation,
-        y_validation,
-        "Validation",
+    print("\n" + "=" * 60)
+    print("EVALUATING LSTM")
+    print("=" * 60)
+
+    validation_metrics = evaluate_model(
+        model, X_validation, y_validation, "Validation"
     )
 
-    # --------------------------------------------------------
-    # Test evaluation
-    # --------------------------------------------------------
-
-    test_results = evaluate_model(
-        model,
-        X_test,
-        y_test,
-        "Test",
+    test_metrics = evaluate_model(
+        model, X_test, y_test, "Test"
     )
 
     # --------------------------------------------------------
     # Save model
     # --------------------------------------------------------
 
-    model_path = (
-        MODEL_DIR
-        / "lstm_aqi_model.keras"
-    )
+    model_path = MODEL_DIR / "lstm_aqi_model_72h_hourly.keras"
 
     model.save(model_path)
 
-    print(
-        f"\n✅ LSTM model saved to:"
-    )
-
-    print(model_path)
+    print(f"\n✅ LSTM model saved to:\n{model_path}")
 
     # --------------------------------------------------------
-    # Save results
+    # Save results for the report
     # --------------------------------------------------------
 
-    results = pd.DataFrame(
-        [
-            {
-                "model": "LSTM",
-                "validation_rmse": validation_results["rmse"],
-                "validation_mae": validation_results["mae"],
-                "validation_r2": validation_results["r2"],
-                "test_rmse": test_results["rmse"],
-                "test_mae": test_results["mae"],
-                "test_r2": test_results["r2"],
-            }
-        ]
-    )
+    results_row = {"model": "LSTM"}
 
-    results_path = (
-        RESULTS_DIR
-        / "lstm_model_results.csv"
-    )
+    for key, value in validation_metrics.items():
+        results_row[f"validation_{key}"] = value
 
-    results.to_csv(
-        results_path,
-        index=False,
-    )
+    for key, value in test_metrics.items():
+        results_row[f"test_{key}"] = value
 
-    print(
-        f"\n✅ LSTM results saved to:"
-    )
+    results_df = pd.DataFrame([results_row])
 
-    print(results_path)
+    results_path = RESULTS_DIR / "lstm_model_results.csv"
+
+    results_df.to_csv(results_path, index=False)
+
+    print(f"\n✅ LSTM results saved to:\n{results_path}")
 
     print("\n" + "=" * 60)
-    print("LSTM TRAINING COMPLETED")
+    print("✅ LSTM TRAINING COMPLETED")
     print("=" * 60)
+    print(
+        "\nNote: compare test_r2 / test_rmse against the Ridge "
+        "model's results (from regsiter_model.py) for your "
+        "report's model-comparison section."
+    )
 
 
 if __name__ == "__main__":

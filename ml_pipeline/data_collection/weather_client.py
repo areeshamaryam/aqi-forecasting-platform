@@ -1,3 +1,4 @@
+#ignoring this file as shifted to openmeteo
 import requests
 from .config import(
     OPENWEATHER_API_KEY,

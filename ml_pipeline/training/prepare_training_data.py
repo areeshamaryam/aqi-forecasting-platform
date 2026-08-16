@@ -31,8 +31,23 @@ TRAINING_DIR.mkdir(
 
 TARGET_COLUMN = "aqi"
 
-# Forecast AQI one hour into the future
-FORECAST_HORIZON = 1
+# --------------------------------------------------------
+# FULL HOURLY FORECASTING (next 3 days = 72 hours)
+#
+# Instead of a single 1-hour-ahead target, or a handful of
+# checkpoint targets (24h/48h/72h), we now create ONE target
+# column PER HOUR from t+1 to t+72. This lets a single
+# multi-output model predict the complete hourly AQI curve
+# for the next 3 days in one call, matching the project
+# brief exactly ("predict AQI in the next 3 days").
+# --------------------------------------------------------
+
+FORECAST_HORIZON_HOURS = 72
+
+TARGET_COLUMNS = [
+    f"target_aqi_h{h}"
+    for h in range(1, FORECAST_HORIZON_HOURS + 1)
+]
 
 # Chronological split
 TRAIN_RATIO = 0.70
@@ -119,9 +134,6 @@ def clean_initial_missing_values(df):
     print("HANDLING INITIAL MISSING VALUES")
     print("=" * 60)
 
-    # aqi_change_rate is NaN only for the first
-    # observation because there is no previous AQI.
-
     if "aqi_change_rate" in df.columns:
 
         missing_before = (
@@ -164,28 +176,18 @@ def create_lag_features(df):
     print("CREATING AQI LAG FEATURES")
     print("=" * 60)
 
-    lag_hours = [
-        1,
-        3,
-        6,
-        12,
-        24,
-    ]
+    lag_hours = [1, 3, 6, 12, 24]
 
     for lag in lag_hours:
 
-        column_name = (
-            f"aqi_lag_{lag}h"
-        )
+        column_name = f"aqi_lag_{lag}h"
 
         df[column_name] = (
             df[TARGET_COLUMN]
             .shift(lag)
         )
 
-        print(
-            f"Created: {column_name}"
-        )
+        print(f"Created: {column_name}")
 
     return df
 
@@ -200,54 +202,20 @@ def create_rolling_features(df):
     print("CREATING ROLLING AQI FEATURES")
     print("=" * 60)
 
-    windows = [
-        3,
-        6,
-        24,
-    ]
+    windows = [3, 6, 24]
 
-    # Shift AQI by one hour first.
-    # This prevents the current AQI from being included
-    # in the rolling features.
-
-    previous_aqi = (
-        df[TARGET_COLUMN]
-        .shift(1)
-    )
+    previous_aqi = df[TARGET_COLUMN].shift(1)
 
     for window in windows:
 
-        mean_column = (
-            f"aqi_rolling_mean_{window}h"
-        )
+        mean_column = f"aqi_rolling_mean_{window}h"
+        std_column = f"aqi_rolling_std_{window}h"
 
-        std_column = (
-            f"aqi_rolling_std_{window}h"
-        )
+        df[mean_column] = previous_aqi.rolling(window=window).mean()
+        df[std_column] = previous_aqi.rolling(window=window).std()
 
-        df[mean_column] = (
-            previous_aqi
-            .rolling(
-                window=window
-            )
-            .mean()
-        )
-
-        df[std_column] = (
-            previous_aqi
-            .rolling(
-                window=window
-            )
-            .std()
-        )
-
-        print(
-            f"Created: {mean_column}"
-        )
-
-        print(
-            f"Created: {std_column}"
-        )
+        print(f"Created: {mean_column}")
+        print(f"Created: {std_column}")
 
     return df
 
@@ -262,45 +230,10 @@ def create_cyclical_time_features(df):
     print("CREATING CYCLICAL TIME FEATURES")
     print("=" * 60)
 
-    # --------------------------------------------------------
-    # Hour of day
-    # --------------------------------------------------------
-
-    df["hour_sin"] = (
-        np.sin(
-            2 * np.pi
-            * df["hour"]
-            / 24
-        )
-    )
-
-    df["hour_cos"] = (
-        np.cos(
-            2 * np.pi
-            * df["hour"]
-            / 24
-        )
-    )
-
-    # --------------------------------------------------------
-    # Month of year
-    # --------------------------------------------------------
-
-    df["month_sin"] = (
-        np.sin(
-            2 * np.pi
-            * df["month"]
-            / 12
-        )
-    )
-
-    df["month_cos"] = (
-        np.cos(
-            2 * np.pi
-            * df["month"]
-            / 12
-        )
-    )
+    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
+    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
     print("Created: hour_sin")
     print("Created: hour_cos")
@@ -311,26 +244,33 @@ def create_cyclical_time_features(df):
 
 
 # ============================================================
-# CREATE FORECAST TARGET
+# CREATE FULL HOURLY FORECAST TARGETS (t+1 ... t+72)
 # ============================================================
 
-def create_target(df):
+def create_targets(df):
+    """
+    Create ONE target column per future hour, from 1 hour
+    ahead to 72 hours (3 days) ahead. This lets a single
+    multi-output model output the entire hourly AQI curve
+    for the next 3 days in one prediction call.
+    """
 
     print("\n" + "=" * 60)
-    print("CREATING FORECAST TARGET")
+    print(
+        f"CREATING {FORECAST_HORIZON_HOURS}-HOUR "
+        f"FORECAST TARGETS"
+    )
     print("=" * 60)
 
-    # Target = AQI one hour in the future
+    for h in range(1, FORECAST_HORIZON_HOURS + 1):
 
-    df["target_aqi"] = (
-        df[TARGET_COLUMN]
-        .shift(
-            -FORECAST_HORIZON
-        )
-    )
+        column_name = f"target_aqi_h{h}"
+
+        df[column_name] = df[TARGET_COLUMN].shift(-h)
 
     print(
-        "Target: AQI 1 hour into the future"
+        f"Created {len(TARGET_COLUMNS)} target columns: "
+        f"target_aqi_h1 ... target_aqi_h{FORECAST_HORIZON_HOURS}"
     )
 
     return df
@@ -349,44 +289,24 @@ def remove_invalid_rows(df):
     rows_before = len(df)
 
     required_columns = [
-        "aqi_lag_1h",
-        "aqi_lag_3h",
-        "aqi_lag_6h",
-        "aqi_lag_12h",
-        "aqi_lag_24h",
-
-        "aqi_rolling_mean_3h",
-        "aqi_rolling_mean_6h",
+        "aqi_lag_1h", "aqi_lag_3h", "aqi_lag_6h",
+        "aqi_lag_12h", "aqi_lag_24h",
+        "aqi_rolling_mean_3h", "aqi_rolling_mean_6h",
         "aqi_rolling_mean_24h",
-
-        "aqi_rolling_std_3h",
-        "aqi_rolling_std_6h",
+        "aqi_rolling_std_3h", "aqi_rolling_std_6h",
         "aqi_rolling_std_24h",
-
-        "target_aqi",
-    ]
+    ] + TARGET_COLUMNS
 
     df = (
-        df.dropna(
-            subset=required_columns
-        )
+        df.dropna(subset=required_columns)
         .reset_index(drop=True)
     )
 
     rows_after = len(df)
 
-    print(
-        f"Rows before: {rows_before}"
-    )
-
-    print(
-        f"Rows after: {rows_after}"
-    )
-
-    print(
-        f"Rows removed: "
-        f"{rows_before - rows_after}"
-    )
+    print(f"Rows before: {rows_before}")
+    print(f"Rows after: {rows_after}")
+    print(f"Rows removed: {rows_before - rows_after}")
 
     return df
 
@@ -403,62 +323,17 @@ def chronological_split(df):
 
     total_rows = len(df)
 
-    train_end = int(
-        total_rows
-        * TRAIN_RATIO
-    )
+    train_end = int(total_rows * TRAIN_RATIO)
+    validation_end = int(total_rows * (TRAIN_RATIO + VALIDATION_RATIO))
 
-    validation_end = int(
-        total_rows
-        * (
-            TRAIN_RATIO
-            + VALIDATION_RATIO
-        )
-    )
+    train_df = df.iloc[:train_end].copy()
+    validation_df = df.iloc[train_end:validation_end].copy()
+    test_df = df.iloc[validation_end:].copy()
 
-    train_df = (
-        df.iloc[
-            :train_end
-        ]
-        .copy()
-    )
-
-    validation_df = (
-        df.iloc[
-            train_end:validation_end
-        ]
-        .copy()
-    )
-
-    test_df = (
-        df.iloc[
-            validation_end:
-        ]
-        .copy()
-    )
-
-    print(
-        f"Total rows: {total_rows}"
-    )
-
-    print(
-        f"Training rows: "
-        f"{len(train_df)}"
-    )
-
-    print(
-        f"Validation rows: "
-        f"{len(validation_df)}"
-    )
-
-    print(
-        f"Test rows: "
-        f"{len(test_df)}"
-    )
-
-    # --------------------------------------------------------
-    # Print periods
-    # --------------------------------------------------------
+    print(f"Total rows: {total_rows}")
+    print(f"Training rows: {len(train_df)}")
+    print(f"Validation rows: {len(validation_df)}")
+    print(f"Test rows: {len(test_df)}")
 
     print("\nTraining period:")
     print(train_df["timestamp"].min())
@@ -475,74 +350,30 @@ def chronological_split(df):
     print("to")
     print(test_df["timestamp"].max())
 
-    return (
-        train_df,
-        validation_df,
-        test_df,
-    )
+    return train_df, validation_df, test_df
 
 
 # ============================================================
 # SAVE DATASETS
 # ============================================================
 
-def save_datasets(
-    train_df,
-    validation_df,
-    test_df,
-):
+def save_datasets(train_df, validation_df, test_df):
 
     print("\n" + "=" * 60)
     print("SAVING TRAINING DATASETS")
     print("=" * 60)
 
-    train_path = (
-        TRAINING_DIR
-        / "train.parquet"
-    )
+    train_path = TRAINING_DIR / "train.parquet"
+    validation_path = TRAINING_DIR / "validation.parquet"
+    test_path = TRAINING_DIR / "test.parquet"
 
-    validation_path = (
-        TRAINING_DIR
-        / "validation.parquet"
-    )
+    train_df.to_parquet(train_path, index=False, engine="pyarrow")
+    validation_df.to_parquet(validation_path, index=False, engine="pyarrow")
+    test_df.to_parquet(test_path, index=False, engine="pyarrow")
 
-    test_path = (
-        TRAINING_DIR
-        / "test.parquet"
-    )
-
-    train_df.to_parquet(
-        train_path,
-        index=False,
-        engine="pyarrow",
-    )
-
-    validation_df.to_parquet(
-        validation_path,
-        index=False,
-        engine="pyarrow",
-    )
-
-    test_df.to_parquet(
-        test_path,
-        index=False,
-        engine="pyarrow",
-    )
-
-    print(
-        f"✅ Training dataset saved:\n"
-        f"{train_path}"
-    )
-
-    print(
-        f"\n✅ Validation dataset saved:\n"
-        f"{validation_path}"
-    )
-
-    print(
-        f"\n✅ Test dataset saved:\n"
-        f"{test_path}"
-    )
+    print(f"✅ Training dataset saved:\n{train_path}")
+    print(f"\n✅ Validation dataset saved:\n{validation_path}")
+    print(f"\n✅ Test dataset saved:\n{test_path}")
 
 
 # ============================================================
@@ -551,83 +382,20 @@ def save_datasets(
 
 def main():
 
-    # --------------------------------------------------------
-    # 1. Get current Open-Meteo features from Hopsworks
-    # --------------------------------------------------------
-
     df = load_dataset()
+    df = clean_initial_missing_values(df)
+    df = create_lag_features(df)
+    df = create_rolling_features(df)
+    df = create_cyclical_time_features(df)
+    df = create_targets(df)
+    df = remove_invalid_rows(df)
 
-    # --------------------------------------------------------
-    # 2. Handle initial missing value
-    # --------------------------------------------------------
+    train_df, validation_df, test_df = chronological_split(df)
 
-    df = clean_initial_missing_values(
-        df
-    )
-
-    # --------------------------------------------------------
-    # 3. Create historical AQI features
-    # --------------------------------------------------------
-
-    df = create_lag_features(
-        df
-    )
-
-    df = create_rolling_features(
-        df
-    )
-
-    # --------------------------------------------------------
-    # 4. Create cyclical time features
-    # --------------------------------------------------------
-
-    df = create_cyclical_time_features(
-        df
-    )
-
-    # --------------------------------------------------------
-    # 5. Create one-hour-ahead target
-    # --------------------------------------------------------
-
-    df = create_target(
-        df
-    )
-
-    # --------------------------------------------------------
-    # 6. Remove rows with unavailable history/target
-    # --------------------------------------------------------
-
-    df = remove_invalid_rows(
-        df
-    )
-
-    # --------------------------------------------------------
-    # 7. Chronological split
-    # --------------------------------------------------------
-
-    (
-        train_df,
-        validation_df,
-        test_df,
-    ) = chronological_split(
-        df
-    )
-
-    # --------------------------------------------------------
-    # 8. Save datasets
-    # --------------------------------------------------------
-
-    save_datasets(
-        train_df,
-        validation_df,
-        test_df,
-    )
+    save_datasets(train_df, validation_df, test_df)
 
     print("\n" + "=" * 60)
-    print(
-        "✅ TRAINING DATA PREPARATION "
-        "COMPLETED SUCCESSFULLY"
-    )
+    print("✅ TRAINING DATA PREPARATION COMPLETED SUCCESSFULLY")
     print("=" * 60)
 
 

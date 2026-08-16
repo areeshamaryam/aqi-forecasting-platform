@@ -11,7 +11,10 @@ from sklearn.pipeline import Pipeline
 from xgboost import XGBRegressor
 # ============================================================
 # PROJECT PATHS
-# final train file with early stopping
+# Multi-horizon version: trains Ridge / RF / XGBoost for
+# EACH forecast horizon (24h, 48h, 72h) instead of a single
+# 1-hour-ahead target.
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -38,14 +41,18 @@ RESULTS_DIR = (
 # CONFIGURATION
 # ============================================================
 
-TARGET_COLUMN = "target_aqi"
+# Multi-horizon targets, must match prepare_training_data.py
+TARGET_COLUMNS = [
+    "target_aqi_24h",
+    "target_aqi_48h",
+    "target_aqi_72h",
+]
 
 # Columns that should NOT be used as numerical ML features
 NON_FEATURE_COLUMNS = [
     "city",
     "timestamp",
-    TARGET_COLUMN,
-]
+] + TARGET_COLUMNS
 
 
 # ============================================================
@@ -73,18 +80,14 @@ def load_datasets():
 
 
 # ============================================================
-# PREPARE FEATURES AND TARGET
+# PREPARE FEATURES AND TARGET (for one horizon)
 # ============================================================
 
-def prepare_features(train_df, validation_df, test_df):
+def prepare_features(train_df, validation_df, test_df, target_column):
     """
-    Separate features and target while keeping the chronological
-    train/validation/test split intact.
+    Separate features and target for a SINGLE horizon while
+    keeping the chronological train/validation/test split intact.
     """
-
-    print("\n" + "=" * 60)
-    print("PREPARING FEATURES AND TARGET")
-    print("=" * 60)
 
     feature_columns = [
         column
@@ -92,20 +95,14 @@ def prepare_features(train_df, validation_df, test_df):
         if column not in NON_FEATURE_COLUMNS
     ]
 
-    print(f"\nNumber of features: {len(feature_columns)}")
-
-    print("\nFeatures:")
-    for column in feature_columns:
-        print(f"  - {column}")
-
     X_train = train_df[feature_columns]
-    y_train = train_df[TARGET_COLUMN]
+    y_train = train_df[target_column]
 
     X_validation = validation_df[feature_columns]
-    y_validation = validation_df[TARGET_COLUMN]
+    y_validation = validation_df[target_column]
 
     X_test = test_df[feature_columns]
-    y_test = test_df[TARGET_COLUMN]
+    y_test = test_df[target_column]
 
     return (
         X_train,
@@ -131,13 +128,14 @@ def evaluate_model(
     y_validation,
     X_test,
     y_test,
+    horizon_label,
 ):
     """
     Train a model and evaluate it on validation and test data.
     """
 
     print("\n" + "=" * 60)
-    print(f"TRAINING: {model_name}")
+    print(f"TRAINING: {model_name}  [{horizon_label}]")
     print("=" * 60)
 
     print("Training model...")
@@ -235,6 +233,7 @@ def evaluate_model(
     print(f"R²:   {test_r2:.4f}")
 
     return {
+        "horizon": horizon_label,
         "model": model_name,
 
         "validation_rmse": validation_rmse,
@@ -254,6 +253,8 @@ def evaluate_model(
 def create_models():
     """
     Create the classical ML models for experimentation.
+    A fresh set is created per horizon so no model state
+    leaks between horizons.
     """
 
     models = {
@@ -293,12 +294,6 @@ def create_models():
         # ----------------------------------------------------
         # 3. XGBoost (with early stopping)
         # ----------------------------------------------------
-        #
-        # n_estimators is set high (1000) as an upper bound.
-        # early_stopping_rounds will halt training once the
-        # validation loss stops improving for 30 consecutive
-        # rounds, so the model won't overfit to the training set.
-        # ----------------------------------------------------
 
         "XGBoost": XGBRegressor(
             n_estimators=1000,
@@ -322,7 +317,7 @@ def create_models():
 
 def save_results(results):
     """
-    Save model comparison results to CSV.
+    Save model comparison results (across all horizons) to CSV.
     """
 
     RESULTS_DIR.mkdir(
@@ -334,9 +329,9 @@ def save_results(results):
         results
     )
 
-    # Sort primarily by test RMSE
+    # Sort by horizon, then by test RMSE within each horizon
     results_df = results_df.sort_values(
-        by="test_rmse",
+        by=["horizon", "test_rmse"],
         ascending=True,
     )
 
@@ -351,7 +346,7 @@ def save_results(results):
     )
 
     print("\n" + "=" * 60)
-    print("MODEL COMPARISON")
+    print("MODEL COMPARISON (ALL HORIZONS)")
     print("=" * 60)
 
     print(
@@ -383,63 +378,63 @@ def main():
         test_df,
     ) = load_datasets()
 
-    # --------------------------------------------------------
-    # Prepare features
-    # --------------------------------------------------------
-
-    (
-        X_train,
-        y_train,
-        X_validation,
-        y_validation,
-        X_test,
-        y_test,
-        feature_columns,
-    ) = prepare_features(
-        train_df,
-        validation_df,
-        test_df,
-    )
+    all_results = []
 
     # --------------------------------------------------------
-    # Create models
+    # Loop over each forecast horizon
     # --------------------------------------------------------
 
-    models = create_models()
+    for target_column in TARGET_COLUMNS:
 
-    results = []
+        horizon_label = target_column.replace("target_aqi_", "")
 
-    # --------------------------------------------------------
-    # Train and evaluate models
-    # --------------------------------------------------------
+        print("\n" + "#" * 60)
+        print(f"# HORIZON: {horizon_label}")
+        print("#" * 60)
 
-    for model_name, model in models.items():
-
-        result = evaluate_model(
-            model_name,
-            model,
+        (
             X_train,
             y_train,
             X_validation,
             y_validation,
             X_test,
             y_test,
+            feature_columns,
+        ) = prepare_features(
+            train_df,
+            validation_df,
+            test_df,
+            target_column,
         )
 
-        results.append(
-            result
-        )
+        models = create_models()
+
+        for model_name, model in models.items():
+
+            result = evaluate_model(
+                model_name,
+                model,
+                X_train,
+                y_train,
+                X_validation,
+                y_validation,
+                X_test,
+                y_test,
+                horizon_label,
+            )
+
+            all_results.append(result)
 
     # --------------------------------------------------------
-    # Save comparison
+    # Save comparison across all horizons and models
     # --------------------------------------------------------
 
     save_results(
-        results
+        all_results
     )
 
     print("\n" + "=" * 60)
-    print("✅ CLASSICAL MODEL EXPERIMENTATION COMPLETED")
+    print("✅ MULTI-HORIZON MODEL EXPERIMENTATION COMPLETED")
     print("=" * 60)
 
 if __name__ == "__main__":

@@ -4,8 +4,7 @@ from pathlib import Path
 
 from .config import DEFAULT_CITY
 from .weather_client import OpenWeatherClient
-
-
+ 
 RAW_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 

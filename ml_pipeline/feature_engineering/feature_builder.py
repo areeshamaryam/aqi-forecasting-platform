@@ -15,7 +15,6 @@ RAW_POLLUTION_DIR = BASE_DIR / "data" / "raw" / "pollution"
 
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
 
-
 # ============================================================
 # WEATHER FEATURE EXTRACTION
 # ============================================================

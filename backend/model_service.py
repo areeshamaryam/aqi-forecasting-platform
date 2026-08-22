@@ -208,18 +208,7 @@ class ModelService:
         more than the 24 hours strictly needed for lag/rolling
         features, giving us a reasonable SHAP background
         sample too.
-
-        This read has been observed to intermittently fail
-        with a FlightUnavailableError on some networks (the
-        Arrow Flight service uses a dedicated port, 5005,
-        which can be unreliable through certain ISPs/routers
-        even when not permanently blocked). We retry a few
-        times with a short delay before giving up, since the
-        exact same call has been observed to succeed on a
-        later attempt with no code changes.
         """
-
-        import time
 
         feature_store = self._project.get_feature_store()
 
@@ -228,39 +217,9 @@ class ModelService:
             version=FEATURE_GROUP_VERSION,
         )
 
-        max_attempts = 3
-        last_error = None
-
-        for attempt in range(1, max_attempts + 1):
-
-            try:
-                df = feature_group.read(
-                    read_options={"use_hive": True},
-                )
-                break  # success, stop retrying
-
-            except Exception as exc:
-                last_error = exc
-                print(
-                    f"⚠️  Feature store read failed "
-                    f"(attempt {attempt}/{max_attempts}): {exc}"
-                )
-
-                if attempt < max_attempts:
-                    wait_seconds = attempt * 5  # 5s, then 10s
-                    print(f"Retrying in {wait_seconds}s...")
-                    time.sleep(wait_seconds)
-
-        else:
-            # Loop completed without a successful break -
-            # every attempt failed.
-            raise RuntimeError(
-                f"Could not read from Hopsworks Feature Store "
-                f"after {max_attempts} attempts. This is likely "
-                f"an intermittent network issue reaching "
-                f"Hopsworks' Arrow Flight service (port 5005). "
-                f"Last error: {last_error}"
-            )
+        df = feature_group.read(
+            read_options={"use_hive": True},
+        )
 
         df["timestamp"] = pd.to_datetime(df["timestamp"])
 
@@ -368,6 +327,20 @@ class ModelService:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "last_known_timestamp": current_ts.isoformat(),
             "current_aqi": float(current_row["aqi"].values[0]),
+            "current_conditions": {
+                "temperature": float(current_row["temperature"].values[0]),
+                "feels_like": float(current_row["feels_like"].values[0]),
+                "humidity": float(current_row["humidity"].values[0]),
+                "pressure": float(current_row["pressure"].values[0]),
+                "wind_speed": float(current_row["wind_speed"].values[0]),
+                "clouds": float(current_row["clouds"].values[0]),
+                "pm2_5": float(current_row["pm2_5"].values[0]),
+                "pm10": float(current_row["pm10"].values[0]),
+                "co": float(current_row["co"].values[0]),
+                "no2": float(current_row["no2"].values[0]),
+                "o3": float(current_row["o3"].values[0]),
+                "so2": float(current_row["so2"].values[0]),
+            },
             "forecast": forecast,
             "peak": peak_entry,
             "hazard_alert": {
